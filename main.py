@@ -16,22 +16,20 @@ logging.getLogger('telethon').setLevel(logging.CRITICAL)
 # ========== 环境变量 ==========
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
-
-# 多个 session 用 "|" 分隔
 SESSIONS_STR = os.environ.get("SESSIONS", "")
 SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
-
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
 HEJI_USERNAME = os.environ.get("HEJI_USERNAME", "heji")
 # =============================
 
 if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID]):
-    print("❌ 缺少环境变量 (API_ID/API_HASH/SESSIONS/BOT_TOKEN/MY_CHAT_ID)")
+    print("❌ 缺少环境变量")
     exit(1)
 
 def clean_text(text):
-    if not text: return ""
+    if not text:
+        return ""
     return re.sub(r'[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\u00a0]', '', text).strip()
 
 async def send_tg(message):
@@ -46,12 +44,9 @@ async def send_tg(message):
     except Exception as e:
         print(f"[推送失败] {e}")
 
-
-async def start_account
-(sessionAPI_string, idx):
-    """为_H单个账号启动ASH客户端并监听"""
+async def start_account(session_string, idx):
     client = TelegramClient(
-        = StringSession(session_string),
+        StringSession(session_string),
         API_ID, API_HASH,
         connection_retries=5,
         retry_delay=5,
@@ -82,8 +77,8 @@ async def start_account
                 if btn_text.lower() == target_code.lower():
                     try:
                         await event.click(i=i, j=j)
-                        print(f"[账号{idx}] 点击成功：{btn_text}")
-                        await send_tg(f"✅ [账号{idx}] 成功领取 @heji 红包\n验证码：{target_code}")
+                        print(f"[账号{idx}] 点击成功: {btn_text}")
+                        await send_tg(f"✅ [账号{idx}] 成功领取 @heji 红包\n验证码: {target_code}")
                         return
                     except FloodWaitError as e:
                         print(f"[账号{idx}] 限流 {e.seconds} 秒")
@@ -96,24 +91,15 @@ async def start_account
         entity = await client.get_entity(HEJI_USERNAME)
         heji_id = entity.id
         print(f"[账号{idx}] 登录成功，@heji -> {heji_id}")
-
-        # 用闭包捕获 idx
-        def make_handler(i):
-            async def h(event):
-                await handler(event)
-            return h
-
         client.add_event_handler(handler, events.NewMessage(from_users=heji_id, incoming=True))
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
 
-
 async def main():
     print(f"[启动] 共 {len(SESSIONS)} 个账号")
     tasks = [start_account(s, i) for i, s in enumerate(SESSIONS)]
     await asyncio.gather(*tasks, return_exceptions=True)
-
 
 if __name__ == '__main__':
     try:
