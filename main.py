@@ -16,15 +16,17 @@ logging.getLogger('telethon').setLevel(logging.CRITICAL)
 # ========== 环境变量 ==========
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
+
+# 多账号 session，用英文半角 | 分隔
 SESSIONS_STR = os.environ.get("SESSIONS", "")
 SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
-HEJI_USERNAME = os.environ.get("HEJI_USERNAME", "heji")
 # =============================
 
 if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID]):
-    print("❌ 缺少环境变量")
+    print("❌ 缺少环境变量 (API_ID / API_HASH / SESSIONS / BOT_TOKEN / MY_CHAT_ID)")
     exit(1)
 
 def clean_text(text):
@@ -61,9 +63,12 @@ async def start_account(session_string, idx):
         markup = event.message.reply_markup
         if not markup:
             return
+
+        # 必须同时包含"验证码"和"领取红包"
         if "验证码" not in text or "领取红包" not in text:
             return
 
+        # 提取验证码
         match = re.search(r'验证码\s*([A-Za-z0-9]+)', text)
         if not match:
             return
@@ -71,6 +76,7 @@ async def start_account(session_string, idx):
         target_code = match.group(1).strip()
         print(f"[账号{idx}] 提取到验证码: {target_code}")
 
+        # 遍历按钮，寻找匹配项
         for i, row in enumerate(markup.rows):
             for j, button in enumerate(row.buttons):
                 btn_text = clean_text(button.text)
@@ -78,7 +84,7 @@ async def start_account(session_string, idx):
                     try:
                         await event.click(i=i, j=j)
                         print(f"[账号{idx}] 点击成功: {btn_text}")
-                        await send_tg(f"✅ [账号{idx}] 成功领取 @heji 红包\n验证码: {target_code}")
+                        await send_tg(f"✅ [账号{idx}] 成功领取红包\n验证码: {target_code}")
                         return
                     except FloodWaitError as e:
                         print(f"[账号{idx}] 限流 {e.seconds} 秒")
@@ -88,10 +94,9 @@ async def start_account(session_string, idx):
 
     try:
         await client.start(phone=lambda: "")
-        entity = await client.get_entity(HEJI_USERNAME)
-        heji_id = entity.id
-        print(f"[账号{idx}] 登录成功，@heji -> {heji_id}")
-        client.add_event_handler(handler, events.NewMessage(from_users=heji_id, incoming=True))
+        # 监听所有群消息
+        client.add_event_handler(handler, events.NewMessage(incoming=True))
+        print(f"[账号{idx}] 登录成功，监听所有群")
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
