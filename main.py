@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import re
+import time
 import urllib.request
 import urllib.parse
 from telethon import TelegramClient, events
@@ -20,7 +21,6 @@ SESSIONS_STR = os.environ.get("SESSIONS", "")
 SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
-# 【新增】只抢这个 Bot 的红包，不带 @
 TARGET_BOT_USERNAME = os.environ.get("BOT_USERNAME", "heji").strip().lstrip('@')
 # =============================
 
@@ -28,7 +28,6 @@ if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID, TARGET_BOT_USERNA
     print("❌ 缺少环境变量")
     exit(1)
 
-# 公开红包按钮关键词
 CLAIM_BUTTON_KEYWORDS = ['领取红包', '🧧', '领取', '领红包', '抢红包']
 
 def clean_text(text):
@@ -52,18 +51,53 @@ async def send_tg(message):
     except Exception as e:
         print(f"[推送失败] {e}")
 
-async def click_button(event, i, j, btn_text, idx, reason):
+def parse_amount_from_response(response):
+    """从机器人返回的消息里解析金额"""
+    if not response:
+        return None
+    text = clean_text(response.message or "")
+    # 匹配类似 "1.23 USDT" 或 "0.05 USDT"
+    m = re.search(r'([\d.]+)\s*(?:USDT|usdt|U|u)', text)
+    if m:
+        return m.group(1)
+    return None
+
+async def get_sender_info(event):
+    """获取消息发送者信息（仅抢到后调用一次）"""
     try:
-        await event.click(i=i, j=j)
-        print(f"[账号{idx}] {reason} 点击成功: {btn_text}")
-        await send_tg(f"✅ [账号{idx}] {reason}\n按钮: {btn_text}")
-        return True
+        sender = await event.get_sender()
+        uid = sender.id
+        uname = getattr(sender, 'username', None)
+        return uid, uname
+    except Exception:
+        return None, None
+
+async def get_chat_info(event):
+    """获取群信息（仅抢到后调用一次）"""
+    try:
+        chat = await event.get_chat()
+        chat_title = getattr(chat, 'title', '未知群组')
+        return chat_title, event.chat_id
+    except Exception:
+        return '未知群组', event.chat_id
+
+def build_msg_link(chat_id, msg_id):
+    raw_id = str(chat_id).replace('-100', '')
+    return f"https://t.me/c/{raw_id}/{msg_id}"
+
+async def click_button(event, i, j, btn_text, idx, reason, start_time):
+    """点击按钮，并返回 (成功与否, 响应消息)"""
+    try:
+        resp = await event.click(i=i, j=j)
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        print(f"[账号{idx}] {reason} 点击成功: {btn_text} ({elapsed_ms}ms)")
+        return True, resp, elapsed_ms
     except FloodWaitError as e:
         print(f"[账号{idx}] 限流 {e.seconds} 秒")
         await asyncio.sleep(e.seconds)
     except Exception as e:
         print(f"[账号{idx}] 点击失败: {e}")
-    return False
+    return False, None, 0
 
 async def start_account(session_string, idx):
     client = TelegramClient(
@@ -78,6 +112,7 @@ async def start_account(session_string, idx):
     )
 
     async def handler(event):
+        start_time = time.time()
         text = clean_text(event.raw_text or "")
         markup = event.message.reply_markup
         if not markup:
@@ -88,13 +123,16 @@ async def start_account(session_string, idx):
             match = re.search(r'验证码\s*([A-Za-z0-9]+)', text)
             if match:
                 target_code = match.group(1).strip()
-                print(f"[账号{idx}] 验证码红包，答案: {target_code}")
                 for i, row in enumerate(markup.rows):
                     for j, button in enumerate(row.buttons):
                         btn_text = clean_text(button.text)
                         if btn_text.lower() == target_code.lower():
-                            if await click_button(event, i, j, btn_text, idx,
-                                                  f"验证码红包({target_code})"):
+                            success, resp, elapsed = await click_button(
+                                event, i, j, btn_text, idx,
+                                f"验证码红包({target_code})", start_time
+                            )
+                            if success:
+                                await send_detailed_notice(event, resp, elapsed, idx)
                                 return
                 return
 
@@ -103,14 +141,42 @@ async def start_account(session_string, idx):
             for j, button in enumerate(row.buttons):
                 btn_text = getattr(button, 'text', '') or ''
                 if is_claim_button(btn_text):
-                    print(f"[账号{idx}] 公开红包，按钮: {btn_text}")
-                    if await click_button(event, i, j, btn_text, idx, "公开红包"):
+                    success, resp, elapsed = await click_button(
+                        event, i, j, btn_text, idx, "公开红包", start_time
+                    )
+                    if success:
+                        await send_detailed_notice(event, resp, elapsed, idx)
                         return
+
+    async def send_detailed_notice(event, response, elapsed_ms, idx):
+        """发送详细通知"""
+        chat_title, chat_id = await get_chat_info(event)
+        sender_id, sender_username = await get_sender_info(event)
+        msg_link = build_msg_link(event.chat_id, event.message.id)
+        amount = parse_amount_from_response(response)
+
+        # 尝试从消息文本解析红包发起者（“XXX 发送了一个红包”）
+        text = clean_text(event.raw_text or "")
+        m = re.search(r'(.+?)\s*发送了一个红包', text)
+        if m:
+            sender_display = m.group(1).strip()
+        else:
+            sender_display = f"@{sender_username}" if sender_username else f"ID:{sender_id}"
+
+        msg = (
+            f"🎉 抢到红包！\n"
+            f"账号：{idx}\n"
+            f"群名：{chat_title}\n"
+            f"群ID：{chat_id}\n"
+            f"红包来自：{sender_display}\n"
+            f"金额：{amount or '未知'} USDT\n"
+            f"延迟：{elapsed_ms} ms\n"
+            f"链接：{msg_link}"
+        )
+        await send_tg(msg)
 
     try:
         await client.start(phone=lambda: "")
-
-        # 【关键】启动时解析目标 Bot 为 ID，只解析一次
         try:
             entity = await client.get_entity(TARGET_BOT_USERNAME)
             bot_id = entity.id
@@ -119,7 +185,6 @@ async def start_account(session_string, idx):
             print(f"[账号{idx}] 无法解析 @{TARGET_BOT_USERNAME}: {e}")
             return
 
-        # 【关键】用 from_users 在事件层过滤，不触发任何额外 API
         client.add_event_handler(
             handler,
             events.NewMessage(from_users=bot_id, incoming=True)
