@@ -146,8 +146,9 @@ def parse_ tjoin_target(target: str):
 
     # 私密群邀请链接：+xxxx 或 joinchat/xxxx
     if t.startswith('+'):
-        return 'invite_hash if t.startswith('joinchat/'):
-        return 'invite_hash', t[len('joinchat/'):]
+    return 'invite_hash', t[1:]
+if t.startswith('joinchat/'):
+    return 'invite_hash', t[len('joinchat/'):]
 
     # 公开群
     return 'username', t
