@@ -199,8 +199,30 @@ async def start_account(session_string, idx):
 
     async def handler(event):
         start_time = time.time()
-        text = clean_text(event.raw_text or "")
+        raw_text = event.raw_text or ""
+        text = clean_text(raw_text)
+        entities = event.message.entities or []
         markup = event.message.reply_markup
+
+        # ========== 【诊断】打印收到的所有目标 Bot 消息 ==========
+        print(f"\n[账号{idx}] ===== 收到目标 Bot 消息 =====")
+        print(f"  raw_text: {raw_text!r}")
+        print(f"  clean_text: {text!r}")
+        print(f"  entities 数量: {len(entities)}")
+        for e in entities:
+            extra = ""
+            if isinstance(e, MessageEntityCustomEmoji):
+                extra = f" | document_id={e.document_id}"
+            print(f"    {type(e).__name__}{extra} | offset={e.offset} | length={e.length}")
+        if markup:
+            print(f"  按钮数量: {sum(len(r.buttons) for r in markup.rows)}")
+            for i, row in enumerate(markup.rows):
+                for j, button in enumerate(row.buttons):
+                    print(f"    按钮({i},{j}): {getattr(button, 'text', '')!r}")
+        else:
+            print(f"  没有按钮")
+        print(f"  ==============================\n")
+
         if not markup:
             return
 
@@ -219,47 +241,50 @@ async def start_account(session_string, idx):
             return
 
         # ========== 类型1：验证码红包 ==========
-        # 特征：消息里含"验证码"，且有按钮
-        if "验证码" in text or ("+" in text and "=" in text) or ("＋" in text and "=" in text):
+        is_code_rp = ("验证码" in text) or ("+" in text and "=" in text) or ("＋" in text and "=" in text)
+        if is_code_rp:
+            print(f"[账号{idx}] >>> 判定为验证码红包")
             answer = ""
 
-            # 方案A：直接正则匹配（如果是普通Unicode字符，比如 "V + Z"）
+            # 方案A：正则
             m = re.search(r'([A-Za-z0-9])\s*[\+＋]\s*([A-Za-z0-9])', text)
             if m:
                 answer = m.group(1) + m.group(2)
+                print(f"[账号{idx}] 正则匹配答案: {answer!r}")
 
-            # 方案B：如果是自定义表情，用AI识别
+            # 方案B：AI
             if not answer:
-                entities = event.message.entities or []
                 doc_ids = [e.document_id for e in entities if isinstance(e, MessageEntityCustomEmoji)]
+                print(f"[账号{idx}] 自定义表情 doc_ids: {doc_ids}")
                 if doc_ids:
-                    print(f"[账号{idx}] 检测到自定义表情，AI识别中...")
+                    print(f"[账号{idx}] 调用 AI 识别...")
                     decoded = await decode_custom_emoji(client, doc_ids)
+                    print(f"[账号{idx}] AI 返回: {decoded}")
                     answer = "".join(decoded.get(d, "") for d in doc_ids)
-                    print(f"[账号{idx}] AI识别结果: {answer!r}")
+                    print(f"[账号{idx}] 拼接答案: {answer!r}")
 
-            # 尝试点击匹配的按钮
+            # 点击
             if answer:
                 for i, row in enumerate(markup.rows):
                     for j, button in enumerate(row.buttons):
                         btn_text = clean_text(button.text)
                         if btn_text.upper() == answer.upper():
                             success, resp, elapsed = await click_button(
-                                event, i, j, btn_text, idx, f"验证码红包({answer})", start_time
+                                event, i, j, btn_text, idx, f"验证码({answer})", start_time
                             )
                             if success:
                                 amt = parse_amount_from_response(resp)
                                 low = (amt is not None and amt < MIN_AMOUNT)
                                 await send_detailed_notice(event, resp, elapsed, idx, low_amount=low)
                                 return
-            # 无论验证码是否解析成功，这条消息到此为止
             return
 
-        # ========== 类型2：公开红包（无验证码） ==========
+        # ========== 类型2：公开红包 ==========
         for i, row in enumerate(markup.rows):
             for j, button in enumerate(row.buttons):
                 btn_text = getattr(button, 'text', '') or ''
                 if is_claim_button(btn_text):
+                    print(f"[账号{idx}] >>> 判定为公开红包，按钮: {btn_text!r}")
                     success, resp, elapsed = await click_button(
                         event, i, j, btn_text, idx, "公开红包", start_time
                     )
