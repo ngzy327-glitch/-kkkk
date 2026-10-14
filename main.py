@@ -22,6 +22,9 @@ SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
 TARGET_BOT_USERNAME = os.environ.get("BOT_USERNAME", "heji").strip().lstrip('@')
+
+# 【新增】金额门槛：低于这个金额不抢
+MIN_AMOUNT = float(os.environ.get("MIN_AMOUNT", "70"))
 # =============================
 
 if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID, TARGET_BOT_USERNAME]):
@@ -39,6 +42,36 @@ def is_claim_button(btn_text):
     cleaned = clean_text(btn_text)
     return any(k in cleaned for k in CLAIM_BUTTON_KEYWORDS)
 
+def extract_total_amount(text):
+    """
+    从消息文本里提取总金额（比如"金额：888.0 USDT"）。
+    找不到返回 None。
+    """
+    if not text:
+        return None
+    m = re.search(r'(?:总?金额[：:]\s*)([\d.]+)', text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+def parse_amount_from_response(response):
+    """从机器人返回的消息里解析金额"""
+    if not response:
+        return None
+    text = clean_text(response.message or "")
+    # 优先匹配"领到了 X USDT"这种
+    m = re.search(r'(?:领到|抢到|获得)\s*([\d.]+)', text)
+    if m:
+        return float(m.group(1))
+    # 兜底：任何 数字 + 币种
+    m = re.search(r'([\d.]+)\s*(?:USDT|usdt|U|u|CNY|cny|QQ|qq)', text)
+    if m:
+        return float(m.group(1))
+    return None
+
 async def send_tg(message):
     safe = urllib.parse.quote(message, encoding='utf-8')
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={MY_CHAT_ID}&text={safe}"
@@ -51,33 +84,17 @@ async def send_tg(message):
     except Exception as e:
         print(f"[推送失败] {e}")
 
-def parse_amount_from_response(response):
-    """从机器人返回的消息里解析金额"""
-    if not response:
-        return None
-    text = clean_text(response.message or "")
-    # 匹配类似 "1.23 USDT" 或 "0.05 USDT"
-    m = re.search(r'([\d.]+)\s*(?:USDT|usdt|U|u)', text)
-    if m:
-        return m.group(1)
-    return None
-
 async def get_sender_info(event):
-    """获取消息发送者信息（仅抢到后调用一次）"""
     try:
         sender = await event.get_sender()
-        uid = sender.id
-        uname = getattr(sender, 'username', None)
-        return uid, uname
+        return sender.id, getattr(sender, 'username', None)
     except Exception:
         return None, None
 
 async def get_chat_info(event):
-    """获取群信息（仅抢到后调用一次）"""
     try:
         chat = await event.get_chat()
-        chat_title = getattr(chat, 'title', '未知群组')
-        return chat_title, event.chat_id
+        return getattr(chat, 'title', '未知群组'), event.chat_id
     except Exception:
         return '未知群组', event.chat_id
 
@@ -86,7 +103,6 @@ def build_msg_link(chat_id, msg_id):
     return f"https://t.me/c/{raw_id}/{msg_id}"
 
 async def click_button(event, i, j, btn_text, idx, reason, start_time):
-    """点击按钮，并返回 (成功与否, 响应消息)"""
     try:
         resp = await event.click(i=i, j=j)
         elapsed_ms = int((time.time() - start_time) * 1000)
@@ -111,11 +127,47 @@ async def start_account(session_string, idx):
         sequential_updates=False,
     )
 
+    async def send_detailed_notice(event, response, elapsed_ms, idx, low_amount=False):
+        chat_title, chat_id = await get_chat_info(event)
+        sender_id, sender_username = await get_sender_info(event)
+        msg_link = build_msg_link(event.chat_id, event.message.id)
+
+        amount = parse_amount_from_response(response)
+
+        # 尝试从消息文本解析红包发起者
+        text = clean_text(event.raw_text or "")
+        m = re.search(r'(.+?)\s*发送了一个红包', text)
+        if m:
+            sender_display = m.group(1).strip()
+        else:
+            sender_display = f"@{sender_username}" if sender_username else f"ID:{sender_id}"
+
+        amount_str = f"{amount}" if amount is not None else "未知"
+        flag = "⚠️ 金额低于阈值" if low_amount else "🎉 抢到红包"
+
+        msg = (
+            f"{flag}\n"
+            f"账号：{idx}\n"
+            f"群名：{chat_title}\n"
+            f"群ID：{chat_id}\n"
+            f"红包来自：{sender_display}\n"
+            f"金额：{amount_str}\n"
+            f"延迟：{elapsed_ms} ms\n"
+            f"链接：{msg_link}"
+        )
+        await send_tg(msg)
+
     async def handler(event):
         start_time = time.time()
         text = clean_text(event.raw_text or "")
         markup = event.message.reply_markup
         if not markup:
+            return
+
+        # 【点击前拦截】如果消息明确写了总金额且低于阈值，跳过
+        total = extract_total_amount(text)
+        if total is not None and total < MIN_AMOUNT:
+            print(f"[账号{idx}] 总金额 {total} 低于 {MIN_AMOUNT}，跳过")
             return
 
         # ---------- 模式1：验证码红包 ----------
@@ -132,7 +184,9 @@ async def start_account(session_string, idx):
                                 f"验证码红包({target_code})", start_time
                             )
                             if success:
-                                await send_detailed_notice(event, resp, elapsed, idx)
+                                amt = parse_amount_from_response(resp)
+                                low = (amt is not None and amt < MIN_AMOUNT)
+                                await send_detailed_notice(event, resp, elapsed, idx, low_amount=low)
                                 return
                 return
 
@@ -145,35 +199,10 @@ async def start_account(session_string, idx):
                         event, i, j, btn_text, idx, "公开红包", start_time
                     )
                     if success:
-                        await send_detailed_notice(event, resp, elapsed, idx)
+                        amt = parse_amount_from_response(resp)
+                        low = (amt is not None and amt < MIN_AMOUNT)
+                        await send_detailed_notice(event, resp, elapsed, idx, low_amount=low)
                         return
-
-    async def send_detailed_notice(event, response, elapsed_ms, idx):
-        """发送详细通知"""
-        chat_title, chat_id = await get_chat_info(event)
-        sender_id, sender_username = await get_sender_info(event)
-        msg_link = build_msg_link(event.chat_id, event.message.id)
-        amount = parse_amount_from_response(response)
-
-        # 尝试从消息文本解析红包发起者（“XXX 发送了一个红包”）
-        text = clean_text(event.raw_text or "")
-        m = re.search(r'(.+?)\s*发送了一个红包', text)
-        if m:
-            sender_display = m.group(1).strip()
-        else:
-            sender_display = f"@{sender_username}" if sender_username else f"ID:{sender_id}"
-
-        msg = (
-            f"🎉 抢到红包！\n"
-            f"账号：{idx}\n"
-            f"群名：{chat_title}\n"
-            f"群ID：{chat_id}\n"
-            f"红包来自：{sender_display}\n"
-            f"金额：{amount or '未知'} USDT\n"
-            f"延迟：{elapsed_ms} ms\n"
-            f"链接：{msg_link}"
-        )
-        await send_tg(msg)
 
     try:
         await client.start(phone=lambda: "")
@@ -189,13 +218,13 @@ async def start_account(session_string, idx):
             handler,
             events.NewMessage(from_users=bot_id, incoming=True)
         )
-        print(f"[账号{idx}] 登录成功，只监听 @{TARGET_BOT_USERNAME}")
+        print(f"[账号{idx}] 登录成功，只监听 @{TARGET_BOT_USERNAME}，阈值 {MIN_AMOUNT}")
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
 
 async def main():
-    print(f"[启动] 共 {len(SESSIONS)} 个账号，只抢 @{TARGET_BOT_USERNAME}")
+    print(f"[启动] 共 {len(SESSIONS)} 个账号，只抢 @{TARGET_BOT_USERNAME}，金额阈值 {MIN_AMOUNT}")
     tasks = [start_account(s, i) for i, s in enumerate(SESSIONS)]
     await asyncio.gather(*tasks, return_exceptions=True)
 
