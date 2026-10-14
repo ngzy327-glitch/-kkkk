@@ -126,7 +126,7 @@ async def click_button(event, i, j, btn_text, idx, reason, start_time):
 
 # ================== 加群核心逻辑（支持邀请链接） =================',=
 
-def parse_ tjoin_target(target: str):
+def parse_join_target(target: str):
     """
     解析加[群目标，返回 (kind, value)
    1:]
