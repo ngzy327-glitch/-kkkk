@@ -124,17 +124,15 @@ async def click_button(event, i, j, btn_text, idx, reason, start_time):
         print(f"[账号{idx}] 点击失败: {e}")
     return False, None, 0
 
-# ================== 加群核心逻辑（支持邀请链接） =================',=
+# ================== 加群核心逻辑（支持邀请链接） ==================
 
 def parse_join_target(target: str):
     """
-    解析加[群目标，返回 (kind, value)
-   1:]
+    解析加群目标，返回 (kind, value)
     kind: 'username' | 'invite_hash'
     """
     t = target.strip()
 
-    # 去掉常见前缀
     if t.startswith('https://t.me/'):
         t = t[len('https://t.me/'):]
     elif t.startswith('http://t.me/'):
@@ -144,24 +142,20 @@ def parse_join_target(target: str):
     elif t.startswith('@'):
         t = t[1:]
 
-    # 私密群邀请链接：+xxxx 或 joinchat/xxxx
     if t.startswith('+'):
-    return 'invite_hash', t[1:]
-if t.startswith('joinchat/'):
-    return 'invite_hash', t[len('joinchat/'):]
+        return 'invite_hash', t[1:]
+    if t.startswith('joinchat/'):
+        return 'invite_hash', t[len('joinchat/'):]
 
-    # 公开群
     return 'username', t
 
 async def join_target(client, target, idx):
-    """加群，支持公开群和邀请链接"""
     kind, value = parse_join_target(target)
 
     try:
         if kind == 'invite_hash':
-            # 私密群邀请链接
             try:
-                result = await client(ImportChatInviteRequest(value))
+                await client(ImportChatInviteRequest(value))
                 print(f"[账号{idx}] 已通过邀请链接加入: {target}")
                 return True
             except UserAlreadyParticipantError:
@@ -174,7 +168,6 @@ async def join_target(client, target, idx):
                 print(f"[账号{idx}] 邀请链接无效: {target}")
                 return False
         else:
-            # 公开群
             try:
                 entity = await client.get_entity(value)
                 await client(JoinChannelRequest(entity))
@@ -187,7 +180,6 @@ async def join_target(client, target, idx):
     except FloodWaitError as e:
         print(f"[账号{idx}] 加群限流 {e.seconds} 秒，等待中...")
         await asyncio.sleep(e.seconds)
-        # 重试一次
         try:
             if kind == 'invite_hash':
                 await client(ImportChatInviteRequest(value))
@@ -208,7 +200,6 @@ async def join_target(client, target, idx):
 async def handle_control_command(client, event, idx):
     text = (event.raw_text or "").strip()
 
-    # /join <目标>
     if text.startswith('/join'):
         target = text[5:].strip()
         if not target:
@@ -216,7 +207,6 @@ async def handle_control_command(client, event, idx):
             return
         await join_target(client, target, idx)
 
-    # /startbot <目标>
     elif text.startswith('/startbot'):
         target = text[9:].strip()
         if not target:
