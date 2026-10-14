@@ -22,7 +22,7 @@ SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
 
-# 【多 Bot】逗号分隔，不带 @
+# 多 Bot 监听（逗号分隔，不带 @）
 BOT_USERNAMES_STR = os.environ.get("BOT_USERNAMES", "heji")
 TARGET_BOT_USERNAMES = [
     u.strip().lstrip('@') for u in BOT_USERNAMES_STR.split(",") if u.strip()
@@ -35,6 +35,14 @@ MIN_AMOUNT = float(os.environ.get("MIN_AMOUNT", "70"))
 if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID, TARGET_BOT_USERNAMES]):
     print("❌ 缺少环境变量")
     exit(1)
+
+# 【屏蔽规则】bot_username -> [被屏蔽的币种关键词]
+BLOCK_RULES = {
+    'kkpay': ['kkcoin'],
+    'dlqb': ['jiba'],
+}
+# 关键词统一转小写比对
+BLOCK_RULES = {k.lower(): [v.lower() for v in vs] for k, vs in BLOCK_RULES.items()}
 
 CLAIM_BUTTON_KEYWORDS = ['领取红包', '🧧', '领取', '领红包', '抢红包']
 
@@ -131,6 +139,9 @@ async def start_account(session_string, idx):
         sequential_updates=False,
     )
 
+    # 解析后的 bot_id -> bot_username 映射（用于屏蔽规则）
+    bot_id_to_username = {}
+
     async def send_detailed_notice(event, response, elapsed_ms, idx, low_amount=False):
         chat_title, chat_id = await get_chat_info(event)
         sender_id, sender_username = await get_sender_info(event)
@@ -166,6 +177,17 @@ async def start_account(session_string, idx):
         if not markup:
             return
 
+        # 【屏蔽规则】检查发送者 Bot 是否在被屏蔽规则中
+        sender_bot_username = bot_id_to_username.get(event.sender_id, '').lower()
+        if sender_bot_username in BLOCK_RULES:
+            blocked_coins = BLOCK_RULES[sender_bot_username]
+            text_lower = text.lower()
+            for coin in blocked_coins:
+                if coin in text_lower:
+                    print(f"[账号{idx}] 屏蔽 @{sender_bot_username} 的 {coin} 红包，跳过")
+                    return
+
+        # 金额门槛检查（总金额）
         total = extract_total_amount(text)
         if total is not None and total < MIN_AMOUNT:
             print(f"[账号{idx}] 总金额 {total} 低于 {MIN_AMOUNT}，跳过")
@@ -214,6 +236,7 @@ async def start_account(session_string, idx):
             try:
                 entity = await client.get_entity(uname)
                 bot_ids.append(entity.id)
+                bot_id_to_username[entity.id] = uname
                 print(f"[账号{idx}] 解析 @{uname} -> {entity.id}")
             except Exception as e:
                 print(f"[账号{idx}] 无法解析 @{uname}: {e}")
@@ -222,18 +245,19 @@ async def start_account(session_string, idx):
             print(f"[账号{idx}] 没有任何目标 Bot 解析成功，退出")
             return
 
-        # 一次性监听所有目标 Bot
         client.add_event_handler(
             handler,
             events.NewMessage(from_users=bot_ids, incoming=True)
         )
         print(f"[账号{idx}] 登录成功，监听 {len(bot_ids)} 个 Bot，阈值 {MIN_AMOUNT}")
+        print(f"[账号{idx}] 屏蔽规则：{BLOCK_RULES}")
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
 
 async def main():
     print(f"[启动] 共 {len(SESSIONS)} 个账号，监听 Bot：{TARGET_BOT_USERNAMES}，阈值 {MIN_AMOUNT}")
+    print(f"[启动] 屏蔽规则：{BLOCK_RULES}")
     tasks = [start_account(s, i) for i, s in enumerate(SESSIONS)]
     await asyncio.gather(*tasks, return_exceptions=True)
 
