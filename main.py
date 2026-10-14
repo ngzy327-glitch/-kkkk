@@ -21,13 +21,18 @@ SESSIONS_STR = os.environ.get("SESSIONS", "")
 SESSIONS = [s.strip() for s in SESSIONS_STR.split("|") if s.strip()]
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 MY_CHAT_ID = int(os.environ.get("MY_CHAT_ID", 0))
-TARGET_BOT_USERNAME = os.environ.get("BOT_USERNAME", "heji").strip().lstrip('@')
 
-# 【新增】金额门槛：低于这个金额不抢
+# 【多 Bot】逗号分隔，不带 @
+BOT_USERNAMES_STR = os.environ.get("BOT_USERNAMES", "heji")
+TARGET_BOT_USERNAMES = [
+    u.strip().lstrip('@') for u in BOT_USERNAMES_STR.split(",") if u.strip()
+]
+
+# 金额门槛
 MIN_AMOUNT = float(os.environ.get("MIN_AMOUNT", "70"))
 # =============================
 
-if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID, TARGET_BOT_USERNAME]):
+if not all([API_ID, API_HASH, SESSIONS, BOT_TOKEN, MY_CHAT_ID, TARGET_BOT_USERNAMES]):
     print("❌ 缺少环境变量")
     exit(1)
 
@@ -43,10 +48,6 @@ def is_claim_button(btn_text):
     return any(k in cleaned for k in CLAIM_BUTTON_KEYWORDS)
 
 def extract_total_amount(text):
-    """
-    从消息文本里提取总金额（比如"金额：888.0 USDT"）。
-    找不到返回 None。
-    """
     if not text:
         return None
     m = re.search(r'(?:总?金额[：:]\s*)([\d.]+)', text)
@@ -58,18 +59,21 @@ def extract_total_amount(text):
     return None
 
 def parse_amount_from_response(response):
-    """从机器人返回的消息里解析金额"""
     if not response:
         return None
     text = clean_text(response.message or "")
-    # 优先匹配"领到了 X USDT"这种
     m = re.search(r'(?:领到|抢到|获得)\s*([\d.]+)', text)
     if m:
-        return float(m.group(1))
-    # 兜底：任何 数字 + 币种
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
     m = re.search(r'([\d.]+)\s*(?:USDT|usdt|U|u|CNY|cny|QQ|qq)', text)
     if m:
-        return float(m.group(1))
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
     return None
 
 async def send_tg(message):
@@ -131,10 +135,8 @@ async def start_account(session_string, idx):
         chat_title, chat_id = await get_chat_info(event)
         sender_id, sender_username = await get_sender_info(event)
         msg_link = build_msg_link(event.chat_id, event.message.id)
-
         amount = parse_amount_from_response(response)
 
-        # 尝试从消息文本解析红包发起者
         text = clean_text(event.raw_text or "")
         m = re.search(r'(.+?)\s*发送了一个红包', text)
         if m:
@@ -164,13 +166,12 @@ async def start_account(session_string, idx):
         if not markup:
             return
 
-        # 【点击前拦截】如果消息明确写了总金额且低于阈值，跳过
         total = extract_total_amount(text)
         if total is not None and total < MIN_AMOUNT:
             print(f"[账号{idx}] 总金额 {total} 低于 {MIN_AMOUNT}，跳过")
             return
 
-        # ---------- 模式1：验证码红包 ----------
+        # 模式1：验证码红包
         if "验证码" in text and "领取红包" in text:
             match = re.search(r'验证码\s*([A-Za-z0-9]+)', text)
             if match:
@@ -190,7 +191,7 @@ async def start_account(session_string, idx):
                                 return
                 return
 
-        # ---------- 模式2：公开红包 ----------
+        # 模式2：公开红包
         for i, row in enumerate(markup.rows):
             for j, button in enumerate(row.buttons):
                 btn_text = getattr(button, 'text', '') or ''
@@ -206,25 +207,33 @@ async def start_account(session_string, idx):
 
     try:
         await client.start(phone=lambda: "")
-        try:
-            entity = await client.get_entity(TARGET_BOT_USERNAME)
-            bot_id = entity.id
-            print(f"[账号{idx}] 解析 @{TARGET_BOT_USERNAME} -> {bot_id}")
-        except Exception as e:
-            print(f"[账号{idx}] 无法解析 @{TARGET_BOT_USERNAME}: {e}")
+
+        # 【关键】解析所有目标 Bot
+        bot_ids = []
+        for uname in TARGET_BOT_USERNAMES:
+            try:
+                entity = await client.get_entity(uname)
+                bot_ids.append(entity.id)
+                print(f"[账号{idx}] 解析 @{uname} -> {entity.id}")
+            except Exception as e:
+                print(f"[账号{idx}] 无法解析 @{uname}: {e}")
+
+        if not bot_ids:
+            print(f"[账号{idx}] 没有任何目标 Bot 解析成功，退出")
             return
 
+        # 一次性监听所有目标 Bot
         client.add_event_handler(
             handler,
-            events.NewMessage(from_users=bot_id, incoming=True)
+            events.NewMessage(from_users=bot_ids, incoming=True)
         )
-        print(f"[账号{idx}] 登录成功，只监听 @{TARGET_BOT_USERNAME}，阈值 {MIN_AMOUNT}")
+        print(f"[账号{idx}] 登录成功，监听 {len(bot_ids)} 个 Bot，阈值 {MIN_AMOUNT}")
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
 
 async def main():
-    print(f"[启动] 共 {len(SESSIONS)} 个账号，只抢 @{TARGET_BOT_USERNAME}，金额阈值 {MIN_AMOUNT}")
+    print(f"[启动] 共 {len(SESSIONS)} 个账号，监听 Bot：{TARGET_BOT_USERNAMES}，阈值 {MIN_AMOUNT}")
     tasks = [start_account(s, i) for i, s in enumerate(SESSIONS)]
     await asyncio.gather(*tasks, return_exceptions=True)
 
