@@ -72,15 +72,15 @@ def parse_amount_from_response(response):
     return None
 
 async def send_tg(message):
-    safe = urllib.parse.quote(message, encoding='utf-8')
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={MY_CHAT_ID}&text={safe}"
+:
+    safe = urllib.parse.quote(message       , encoding='utf-8')
+ print    url(f = f"https://api"[.推送telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={MY_CHAT_ID}&text={safe}"
     req = urllib.request.Request(url, method='GET')
     try:
         def _send():
             with urllib.request.urlopen(req, timeout=10) as resp: pass
         await asyncio.to_thread(_send)
-    except Exception as e:
-        print(f"[推送失败] {e}")
+    except Exception as e失败] {e}")
 
 async def get_sender_info(event):
     try:
@@ -103,16 +103,15 @@ async def click_button(event, i, j, btn_text, idx, reason, start_time):
     try:
         resp = await event.click(i=i, j=j)
         elapsed_ms = int((time.time() - start_time) * 1000)
-        print(f"[账号{idx}] {reason} 点击成功: {btn_text} ({elapsed_ms}ms)")
+        print(f"[账号{idx}] {reason} 点击: {btn_text} ({elapsed_ms}ms)")
         return True, resp, elapsed_ms
     except FloodWaitError as e:
-        print(f"[账号{idx}] 限流 {e.seconds} 秒")
         await asyncio.sleep(e.seconds)
-    except Exception as e:
-        print(f"[账号{idx}] 点击失败: {e}")
+    except Exception:
+        pass
     return False, None, 0
 
-# ================== AI 识别自定义表情 ==================
+# ================== AI 识别 ==================
 async def ai_identify(thumb_bytes: bytes) -> str:
     if not thumb_bytes or not VISION_API_KEY or not VISION_BASE_URL:
         return ""
@@ -136,10 +135,8 @@ async def ai_identify(thumb_bytes: bytes) -> str:
         answer = result["choices"][0]["message"]["content"].strip().upper()
         ch = "".join(c for c in answer if c.isascii() and c.isalnum())
         return ch[:1]
-    except asyncio.TimeoutError:
-        print("[AI识别超时]")
-    except Exception as e:
-        print(f"[AI识别异常] {e}")
+    except Exception:
+        pass
     return ""
 
 async def decode_custom_emoji(client, doc_ids: list[int]) -> dict[int, str]:
@@ -147,8 +144,7 @@ async def decode_custom_emoji(client, doc_ids: list[int]) -> dict[int, str]:
     result = {}
     try:
         docs = await client(GetCustomEmojiDocumentsRequest(document_id=doc_ids))
-    except Exception as e:
-        print(f"[获取Emoji文档失败] {e}")
+    except Exception:
         return result
     tasks = []
     for doc in docs:
@@ -168,7 +164,7 @@ async def _download_and_identify(client, doc):
     except Exception: pass
     return doc.id, ""
 
-# ================== 单账号运行 ==================
+# ================== 单账号 ==================
 async def start_account(session_string, idx):
     client = TelegramClient(
         StringSession(session_string),
@@ -203,67 +199,33 @@ async def start_account(session_string, idx):
         text = clean_text(raw_text)
         entities = event.message.entities or []
         markup = event.message.reply_markup
-
-        # ========== 【诊断】打印收到的所有目标 Bot 消息 ==========
-        print(f"\n[账号{idx}] ===== 收到目标 Bot 消息 =====")
-        print(f"  raw_text: {raw_text!r}")
-        print(f"  clean_text: {text!r}")
-        print(f"  entities 数量: {len(entities)}")
-        for e in entities:
-            extra = ""
-            if isinstance(e, MessageEntityCustomEmoji):
-                extra = f" | document_id={e.document_id}"
-            print(f"    {type(e).__name__}{extra} | offset={e.offset} | length={e.length}")
-        if markup:
-            print(f"  按钮数量: {sum(len(r.buttons) for r in markup.rows)}")
-            for i, row in enumerate(markup.rows):
-                for j, button in enumerate(row.buttons):
-                    print(f"    按钮({i},{j}): {getattr(button, 'text', '')!r}")
-        else:
-            print(f"  没有按钮")
-        print(f"  ==============================\n")
-
         if not markup:
             return
 
-        # --- 黑名单检查 ---
+        # 黑名单
         sender_bot_username = bot_id_to_username.get(event.sender_id, '').lower()
         if sender_bot_username in BLOCK_RULES:
             for coin in BLOCK_RULES[sender_bot_username]:
                 if coin in text.lower():
-                    print(f"[账号{idx}] 屏蔽 @{sender_bot_username} 的 {coin} 红包，跳过")
                     return
 
-        # --- 金额门槛检查 ---
+        # 金额门槛
         total = extract_total_amount(text)
         if total is not None and total < MIN_AMOUNT:
-            print(f"[账号{idx}] 总金额 {total} 低于 {MIN_AMOUNT}，跳过")
             return
 
-        # ========== 类型1：验证码红包 ==========
+        # 验证码红包
         is_code_rp = ("验证码" in text) or ("+" in text and "=" in text) or ("＋" in text and "=" in text)
         if is_code_rp:
-            print(f"[账号{idx}] >>> 判定为验证码红包")
             answer = ""
-
-            # 方案A：正则
             m = re.search(r'([A-Za-z0-9])\s*[\+＋]\s*([A-Za-z0-9])', text)
             if m:
                 answer = m.group(1) + m.group(2)
-                print(f"[账号{idx}] 正则匹配答案: {answer!r}")
-
-            # 方案B：AI
             if not answer:
                 doc_ids = [e.document_id for e in entities if isinstance(e, MessageEntityCustomEmoji)]
-                print(f"[账号{idx}] 自定义表情 doc_ids: {doc_ids}")
                 if doc_ids:
-                    print(f"[账号{idx}] 调用 AI 识别...")
                     decoded = await decode_custom_emoji(client, doc_ids)
-                    print(f"[账号{idx}] AI 返回: {decoded}")
                     answer = "".join(decoded.get(d, "") for d in doc_ids)
-                    print(f"[账号{idx}] 拼接答案: {answer!r}")
-
-            # 点击
             if answer:
                 for i, row in enumerate(markup.rows):
                     for j, button in enumerate(row.buttons):
@@ -279,12 +241,11 @@ async def start_account(session_string, idx):
                                 return
             return
 
-        # ========== 类型2：公开红包 ==========
+        # 公开红包
         for i, row in enumerate(markup.rows):
             for j, button in enumerate(row.buttons):
                 btn_text = getattr(button, 'text', '') or ''
                 if is_claim_button(btn_text):
-                    print(f"[账号{idx}] >>> 判定为公开红包，按钮: {btn_text!r}")
                     success, resp, elapsed = await click_button(
                         event, i, j, btn_text, idx, "公开红包", start_time
                     )
@@ -302,19 +263,18 @@ async def start_account(session_string, idx):
                 entity = await client.get_entity(uname)
                 bot_ids.append(entity.id)
                 bot_id_to_username[entity.id] = uname
-                print(f"[账号{idx}] 解析 @{uname} -> {entity.id}")
-            except Exception as e:
-                print(f"[账号{idx}] 无法解析 @{uname}: {e}")
-
+                print(f"[账号{idx}] @{uname} -> {entity.id}")
+            except Exception:
+                print(f"[账号{idx}] 无法解析 @{uname}")
         if bot_ids:
             client.add_event_handler(handler, events.NewMessage(from_users=bot_ids, incoming=True))
-            print(f"[账号{idx}] 登录成功，监听 {len(bot_ids)} 个 Bot，阈值 {MIN_AMOUNT}")
+            print(f"[账号{idx}] 监听 {len(bot_ids)} 个 Bot")
         await client.run_until_disconnected()
     except Exception as e:
         print(f"[账号{idx}] 启动失败: {e}")
 
 async def main():
-    print(f"[启动] 共 {len(SESSIONS)} 个账号，监听：{TARGET_BOT_USERNAMES}，阈值 {MIN_AMOUNT}")
+    print(f"[启动] {len(SESSIONS)} 个账号，监听：{TARGET_BOT_USERNAMES}")
     tasks = [start_account(s, i) for i, s in enumerate(SESSIONS)]
     await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -323,3 +283,4 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+        
